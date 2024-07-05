@@ -20,20 +20,210 @@
 
 #!csharp
 
-interface ICommand
+using System;
+using System.Threading;
+using System.Collections.Concurrent;
+
+public interface ICommand
 {
     void Execute();
+    bool IsCompleted { get; }
 }
 
-
-public class TestCommand(int id) : ICommand
+public interface IScheduler
 {
-    int counter = 0;
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
+
+public class RoundRobinScheduler : IScheduler
+{
+    private readonly ConcurrentQueue<ICommand> _commands = new ConcurrentQueue<ICommand>();
+    private readonly ConcurrentQueue<ICommand> _runningCommands = new ConcurrentQueue<ICommand>();
+
+    public bool HasCommand() => !_commands.IsEmpty || !_runningCommands.IsEmpty;
+
+    public void Add(ICommand cmd) => _commands.Enqueue(cmd);
+
+    public ICommand Select()
+    {
+        ICommand command = null;
+        if (_runningCommands.TryDequeue(out command))
+        {
+            if (!command.IsCompleted)
+            {
+                return command;
+            }
+            return null;
+        }
+        else if (_commands.TryDequeue(out command))
+        {
+            _runningCommands.Enqueue(command);
+            return command;
+        }
+        return null;
+    }
+}
+
+public class ServerThread
+{
+    private readonly ConcurrentQueue<ICommand> _commands = new ConcurrentQueue<ICommand>();
+    private readonly IScheduler _scheduler = new RoundRobinScheduler();
+    private bool _softStopFlag;
+    private bool _hardStopFlag;
+    private Thread _mainThread;
+
+    public ServerThread()
+    {
+        _mainThread = new Thread(() =>
+        {
+            while (true)
+            {
+                ProcessCommands();
+
+                if (_hardStopFlag)
+                {
+                    Console.WriteLine("Получена команда жёсткой остановки, останавливаюсь");
+                    break;
+                }
+
+                if (_softStopFlag && !_scheduler.HasCommand())
+                {
+                    Console.WriteLine("Получена команда мягкой остановки, останавливаюсь");
+                    break;
+                }
+
+                if (!_scheduler.HasCommand())
+                {
+                    Thread.Sleep(20);
+                }
+            }
+        });
+
+        _mainThread.Start();
+    }
+
+    private void ProcessCommands()
+    {
+        ICommand command = _scheduler.Select();
+        if (command != null)
+        {
+            try
+            {
+                command.Execute();
+            }
+            catch (Exception e)
+            {                Console.WriteLine($"Ошибка! {e.Message}. Продолжаю работу, игнорируя команду");
+            }
+        }
+    }
+
+    public int GetThreadId() => _mainThread.ManagedThreadId;
+
+    public Thread GetThread() => _mainThread;
+
+    public void SetSoftStop() => _softStopFlag = true;
+
+    public void SetHardStop() => _hardStopFlag = true;
+
+    public IScheduler GetScheduler() => _scheduler;
+
+    public void AddCommand(ICommand c) => _commands.Enqueue(c);
+}
+
+// Пример долгоиграющей команды:
+public class TestCommand : ICommand
+{
+    private int _iterations;
+    private int _currentIteration;
+
+    public TestCommand(int iterations)
+    {
+        _iterations = iterations;
+        _currentIteration = 0;
+    }
 
     public void Execute()
     {
-        Console.WriteLine($"Поток {id} вызов {++counter}");
+        if (_currentIteration < _iterations)
+        {
+            Console.WriteLine($"TestCommand: Iteration {_currentIteration + 1}");
+            _currentIteration++;
+            Thread.Sleep(100); // Симулируем долгую работу
+        }
     }
+
+    public bool IsCompleted => _currentIteration >= _iterations;
+}
+
+// Пример использования:
+public class Example
+{
+    public static void Main(string[] args)
+    {
+        ServerThread serverThread = new ServerThread();
+
+        // Добавление 5 экземпляров TestCommand, каждый из которых выполняется 3 раза
+        for (int i = 0; i < 5; i++)
+        {
+            serverThread.AddCommand(new TestCommand(3));
+        }
+
+        // Задержка перед остановкой потока (чтобы команды успели выполниться)
+        Thread.Sleep(1000);
+
+        // Остановка потока с помощью HardStop
+        serverThread.AddCommand(new HardStop(serverThread));
+
+        // Ожидание завершения потока
+        serverThread.GetThread().Join();
+
+        Console.WriteLine("Поток завершен");
+    }
+}
+
+// Команды HardStop и SoftStop - остаются без изменений из предыдущего примера
+public class HardStop : ICommand
+{
+    private readonly ServerThread _th;
+
+    public HardStop(ServerThread th)
+    {
+        _th = th;
+    }
+
+    public void Execute()
+    {
+        if (_th.GetThreadId() != Thread.CurrentThread.ManagedThreadId)
+        {
+            throw new Exception($"Wrong thread Id: need {_th.GetThreadId()}, got {Thread.CurrentThread.ManagedThreadId}");
+        }
+        _th.SetHardStop();
+    }
+
+    public bool IsCompleted { get; } = true;
+}
+
+public class SoftStop : ICommand
+{
+    private readonly ServerThread _th;
+
+    public SoftStop(ServerThread th)
+    {
+        _th = th;
+    }
+
+    public void Execute()
+    {
+        if (_th.GetThreadId() != Thread.CurrentThread.ManagedThreadId)
+        {
+            throw new Exception($"Wrong thread Id: need {_th.GetThreadId()}, got {Thread.CurrentThread.ManagedThreadId}");
+        }
+        _th.SetSoftStop();
+    }
+
+    public bool IsCompleted { get; } = true;
 }
 
 #!markdown
