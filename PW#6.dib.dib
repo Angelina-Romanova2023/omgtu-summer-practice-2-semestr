@@ -43,4 +43,175 @@
 
 #!markdown
 
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+
+    private static long BlockingCollectionWriteTime;
+    private static long BlockingCollectionReadTime;
+    private static long ConcurrentQueueWriteTime;
+    private static long ConcurrentQueueReadTime;
+    private static long QueueWriteTime;
+    private static long QueueReadTime;
+    
+
+    private static void BlockingCollectionTest()
+    {
+        var queue = new BlockingCollection<object>();
+
+        var writeThread = new Thread(() =>
+        {
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
+
+            for (int i = 0; i < 1000000; i++)
+            {
+                queue.Add(i);
+            }
+
+            stopwatch.Stop();
+            BlockingCollectionWriteTime = stopwatch.ElapsedMilliseconds;
+        });
+
+        var readThread = new Thread(() =>
+        {
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
+
+            for (int i = 0; i < 1000000; i++)
+            {
+                queue.Take();
+            }
+
+            stopwatch.Stop();
+            BlockingCollectionReadTime = stopwatch.ElapsedMilliseconds;
+        });
+
+        var startEvent = new ManualResetEventSlim(false);
+        writeThread.Start();
+        readThread.Start();
+
+        startEvent.Set();
+
+        writeThread.Join();
+        readThread.Join();
+    }
+
+    private static void ConcurrentQueueTest()
+    {
+        var queue = new ConcurrentQueue<object>();
+
+        var writeThread = new Thread(() =>
+        {
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
+
+            for (int i = 0; i < 1000000; i++)
+            {
+                queue.Enqueue(i);
+            }
+
+            stopwatch.Stop();
+            ConcurrentQueueWriteTime = stopwatch.ElapsedMilliseconds;
+        });
+
+        var readThread = new Thread(() =>
+        {
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
+
+            for (int i = 0; i < 1000000; i++)
+            {
+                object item;
+                queue.TryDequeue(out item);
+            }
+
+            stopwatch.Stop();
+            ConcurrentQueueReadTime = stopwatch.ElapsedMilliseconds;
+        });
+
+        var startEvent = new ManualResetEventSlim(false);
+        writeThread.Start();
+        readThread.Start();
+
+        startEvent.Set();
+
+        writeThread.Join();
+        readThread.Join();
+    }
+
+    private static void QueueTest()
+    {
+        var queue = new Queue<object>();
+
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+
+        for (int i = 0; i < 1000000; i++)
+        {
+            queue.Enqueue(i);
+        }
+
+        stopwatch.Stop();
+        QueueWriteTime = stopwatch.ElapsedMilliseconds;
+
+        stopwatch.Reset();
+        stopwatch.Start();
+
+        for (int i = 0; i < 1000000; i++)
+        {
+            queue.Dequeue();
+        }
+
+        stopwatch.Stop();
+        QueueReadTime = stopwatch.ElapsedMilliseconds;
+    }
+
+        var blockingCollectionTimes = new List<long>();
+        var concurrentQueueTimes = new List<long>();
+        var queueTimes = new List<long>();
+
+        for (int i = 0; i < 10; i++)
+        {
+            BlockingCollectionTest();
+            blockingCollectionTimes.Add(BlockingCollectionWriteTime + BlockingCollectionReadTime);
+
+            ConcurrentQueueTest();
+            concurrentQueueTimes.Add(ConcurrentQueueWriteTime + ConcurrentQueueReadTime);
+
+            QueueTest();
+            queueTimes.Add(QueueWriteTime + QueueReadTime);
+        }
+
+        Console.WriteLine("BlockingCollection: {0} ms", blockingCollectionTimes.Average());
+        Console.WriteLine("ConcurrentQueue: {0} ms", concurrentQueueTimes.Average());
+        Console.WriteLine("Queue: {0} ms", queueTimes.Average());
+
+        var improvementPercentage = (concurrentQueueTimes.Average() - queueTimes.Average()) * 100 / queueTimes.Average();
+        Console.WriteLine("ConcurrentQueue is {0}% faster than Queue.", improvementPercentage);
+
+#!markdown
+
+#r "nuget:ScottPlot, 5.0.36"
+using System.Diagnostics;
+using Microsoft.DotNet.Interactive.Formatting;
+
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(Enumerable.Range(1,10).ToArray<int>(), blockingCollectionTimes.Average());
+plt.Add.Scatter(Enumerable.Range(1,10).ToArray<int>(), concurrentQueueTimes.Average());
+plt.Add.Scatter(Enumerable.Range(1,10).ToArray<int>(), queueTimes.Average());
+plt
+
+#!markdown
+
 ## Вывод
+
+#!markdown
+
+• Результаты показывают, что ConcurrentQueue значительно быстрее BlockingCollection в этом сценарии. Это потому что BlockingCollection блокирует потоки, что приводит к снижению производительности при работе с несколькими потоками. 
+
+• Queue также быстрее BlockingCollection, но не потокобезопасна. 
