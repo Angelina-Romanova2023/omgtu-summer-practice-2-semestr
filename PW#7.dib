@@ -17,9 +17,142 @@
 
 #!csharp
 
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+public class ServerThread
+{
+    public readonly ConcurrentQueue<ICommand> _commands = new ConcurrentQueue<ICommand>();
+    private bool _isRunning = true;
+    private readonly ManualResetEventSlim _completedEvent = new ManualResetEventSlim(false);
+
+    public void Start()
+    {
+        while (_isRunning)
+        {
+            if (_commands.TryDequeue(out var command))
+            {
+                try
+                {
+                    command.Execute();
+                }
+                catch (Exception ex)
+                {
+                    // Обработать исключение
+                }
+            }
+            else
+            {
+                // Отсутствие команд в очереди не должно требовать значительных затрат процессорного времени
+                Thread.Sleep(1);
+            }
+        }
+
+        _completedEvent.Set(); // Установить событие при завершении выполнения
+    }
+
+    public void Stop()
+    {
+        _isRunning = false;
+    }
+
+    public void EnqueueCommand(ICommand command)
+    {
+        _commands.Enqueue(command);
+    }
+
+    public void WaitForCompletion()
+    {
+        _completedEvent.Wait(); // Ждать завершения выполнения
+    }
+}
+
 public interface ICommand
 {
     void Execute();
+}
+
+public class HardStopCommand : ICommand
+{
+    private readonly ServerThread _serverThread;
+
+    public HardStopCommand(ServerThread serverThread)
+    {
+        _serverThread = serverThread;
+    }
+
+    public void Execute()
+    {
+        if (!Equals(_serverThread, Thread.CurrentThread))
+        {
+            throw new InvalidOperationException("Команда HardStop должна выполняться в потоке, который она должна остановить.");
+        }
+
+        _serverThread.Stop();
+    }
+}
+
+public class SoftStopCommand : ICommand
+{
+    private readonly ServerThread _serverThread;
+
+    public SoftStopCommand(ServerThread serverThread)
+    {
+        _serverThread = serverThread;
+    }
+
+    public void Execute()
+    {
+        if (!Equals(_serverThread, Thread.CurrentThread))
+        {
+            throw new InvalidOperationException("Команда SoftStop должна выполняться в потоке, который она должна остановить.");
+        }
+
+        while (_serverThread._commands.Count > 0)
+        {
+            // Ждем, пока очередь команд опустеет
+            Thread.Sleep(1);
+        }
+
+        _serverThread.Stop();
+    }
+}
+
+public class Test
+{
+    public static void Main()
+    {
+        var serverThread = new ServerThread();
+        serverThread.Start();
+
+        // Отправить команды в поток
+        serverThread.EnqueueCommand(new HardStopCommand(serverThread));
+        serverThread.EnqueueCommand(new SoftStopCommand(serverThread));
+
+        // Проверить, что команды выполняются правильно
+        try
+        {
+            // Попытаться выполнить команду HardStop в другом потоке. Должно выброситься исключение.
+            new HardStopCommand(serverThread).Execute();
+        }
+        catch (InvalidOperationException)
+        {
+            // Исключение обработано успешно
+        }
+
+        try
+        {
+            // Попытаться выполнить команду SoftStop в другом потоке. Должно выброситься исключение.
+            new SoftStopCommand(serverThread).Execute();
+        }
+        catch (InvalidOperationException)
+        {
+            // Исключение обработано успешно
+        }
+
+        // Ожидание завершения потока
+        serverThread.WaitForCompletion();
+    }
 }
 
 #!markdown
